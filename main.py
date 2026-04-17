@@ -1,79 +1,68 @@
-import os
-import time
-import requests
+import os, requests
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-from scraper import get_news_details
+from telegraph import Telegraph
+from scraper import get_news_details, get_full_content
 from translator import translate_and_refine
+from deep_translator import GoogleTranslator
+from bs4 import BeautifulSoup
 
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-def send_news_to_telegram(title, mm_title, mm_summary, image_url, source_link):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    
-    # Heading ကို Bold လုပ်ပြီး emoji လေးတွေနဲ့ ပိုလန်းအောင်ပြင်ထားတယ်
-    caption = (
-        f"🔥 *{mm_title}*\n\n"
-        f"📝 *သတင်းအနှစ်ချုပ် -*\n{mm_summary}\n\n"
-        f"🌐 [မူရင်းသတင်းဖတ်ရန် ဒီကိုနှိပ်ပါ]({source_link})\n"
-        f"───────────────\n"
-        f"📌 _Original: {title}_"
-    )
-    
-    payload = {
-        "chat_id": CHAT_ID,
-        "photo": image_url,
-        "caption": caption,
-        "parse_mode": "Markdown"
-    }
-    
+def process_item(item, use_telegraph, chat_id):
     try:
-        response = requests.post(url, json=payload)
-        if response.status_code != 200:
-            # ပုံပို့မရရင် text ပဲပို့မယ်
-            text_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-            requests.post(text_url, json={"chat_id": CHAT_ID, "text": caption, "parse_mode": "Markdown", "disable_web_page_preview": False})
+        print(f"[*] Analyzing: {str(item['title'])[:40]}...")
+        mm_title = str(translate_and_refine(item['title']))
+        raw_summary_text = BeautifulSoup(str(item['summary']), "html.parser").get_text()
+        mm_summary = str(translate_and_refine(raw_summary_text))
+
+        link_footer = f'🔗 <a href="{item["link"]}">Original Source</a>'
+
+        if use_telegraph:
+            full_text_en = get_full_content(item['link'])
+            try:
+                mm_full = str(GoogleTranslator(source='auto', target='my').translate(full_text_en if full_text_en else raw_summary_text))
+                tg = Telegraph()
+                tg.create_account(short_name='AI_News_Bot')
+                html_body = f"<figure><img src='{item['image']}'></figure><h3>{mm_title}</h3><hr><p>{mm_full.replace('\n', '<br>')}</p>"
+                page = tg.create_page(title=mm_title[:100], html_content=html_body)
+                link_footer = f'📖 <a href="https://telegra.ph/{page["path"]}">Full Article (Instant View)</a>\n\n{link_footer}'
+            except: 
+                pass
+
+        caption = f"<b>🔥 {mm_title.upper()}</b>\n━━━━━━━━━━━━━━━\n\n<b>📝 Analysis:</b>\n{mm_summary}\n\n{link_footer}"
+
+        # Telegram သို့ ပို့ဆောင်ခြင်း
+        payload = {"chat_id": chat_id, "photo": item['image'], "caption": caption[:1024], "parse_mode": "HTML"}
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", json=payload, timeout=30)
+        print(f"[+] Post Success to {chat_id}")
     except Exception as e:
-        print(f"Telegram Connection Error: {e}")
+        print(f"[-] Item Error: {e}")
 
-def run_news_factory():
-    print("\n🚀 --- AI News Bot System (Premium Version) --- 🚀")
-    target_url = input("Enter news URL: ")
+def run(rss_links=None, mode="1", chat_id=None):
+    """
+    bot.py မှ လှမ်းခေါ်နိုင်ရန် run function ကို parameter များဖြင့် ပြင်ဆင်ထားသည်။
+    """
+    if not TOKEN: 
+        return print("❌ Token missing!")
     
-    if not target_url:
-        target_url = "https://techcrunch.com/category/artificial-intelligence/"
-    
-    news_items = get_news_details(target_url) 
-    
-    if not news_items:
-        print("❌ No news found!")
-        return
+    # CLI ဖြင့် တိုက်ရိုက် run လျှင် input တောင်းမည်
+    if rss_links is None:
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        mode = input("1. Fast | 2. Detailed: ")
+        url = input("URL: ").strip() or "https://techcrunch.com/category/artificial-intelligence/feed/"
+        rss_links = [url]
 
-    print(f"\n[+] အကြောင်းအရာ {len(news_items)} ခု တွေ့ရှိသည်။ ဘာသာပြန်နေသည်...\n")
+    print(f"[*] Target Chat ID: {chat_id}")
+    print(f"[*] Processing {len(rss_links)} sources...")
 
-    for i, item in enumerate(news_items, 1):
-        # Title ကို ပြန်မယ်
-        mm_title = translate_and_refine(item['title'])
-        
-        # Summary ကို ပိုရှည်ရှည်နဲ့ စိတ်ဝင်စားဖို့ကောင်းအောင် ပြန်ခိုင်းမယ်
-        # (translator.py ထဲက prompt မှာ 'summarize in 3 bullet points' လို့ ထည့်ထားရင် ပိုမိုက်တယ်)
-        mm_summary = translate_and_refine(item['summary'])
-        
-        print(f"[{i}] Sending: {mm_title[:40]}...")
-        
-        send_news_to_telegram(
-            item['title'], 
-            mm_title, 
-            mm_summary, 
-            item['image'], 
-            item['link']
-        )
-        
-        time.sleep(3)
-
-    print("\n✅ လုပ်ဆောင်ချက်အားလုံး ပြီးဆုံးပါပြီ။ Telegram ကို စစ်ကြည့်လိုက်ပါ Dude!")
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        for url in rss_links:
+            news = get_news_details(url)
+            for item in news[:3]: # တစ်ကြိမ်လျှင် ၂-၃ ပုဒ်သာ စမ်းသပ်တင်ရန်
+                ex.submit(process_item, item, mode == "2", chat_id)
 
 if __name__ == "__main__":
-    run_news_factory()
+    run()
 
