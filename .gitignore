@@ -3,3 +3,5 @@ venv/
 .env
 __pycache__/
 sent_news.txt
+bot_data.pickle
+__pycache__/
