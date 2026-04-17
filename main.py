@@ -9,9 +9,26 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+SENT_LOG = "sent_news.txt" # တင်ပြီးသား link များမှတ်တမ်း
+
+def is_already_sent(link):
+    """Link ဟောင်း ဟုတ်မဟုတ် စစ်ဆေးခြင်း"""
+    if not os.path.exists(SENT_LOG): return False
+    with open(SENT_LOG, "r") as f:
+        return link in f.read()
+
+def log_sent_news(link):
+    """တင်ပြီးသော Link အား မှတ်တမ်းတင်ခြင်း"""
+    with open(SENT_LOG, "a") as f:
+        f.write(link + "\n")
 
 def process_item(item, use_telegraph, chat_id):
     try:
+        # Duplicate စစ်ဆေးသည့် Logic
+        if is_already_sent(item['link']):
+            print(f"[-] Skipping: {str(item['title'])[:30]} (Already Sent)")
+            return
+
         print(f"[*] Analyzing: {str(item['title'])[:40]}...")
         mm_title = str(translate_and_refine(item['title']))
         raw_summary_text = BeautifulSoup(str(item['summary']), "html.parser").get_text()
@@ -33,21 +50,22 @@ def process_item(item, use_telegraph, chat_id):
 
         caption = f"<b>🔥 {mm_title.upper()}</b>\n━━━━━━━━━━━━━━━\n\n<b>📝 Analysis:</b>\n{mm_summary}\n\n{link_footer}"
 
-        # Telegram သို့ ပို့ဆောင်ခြင်း
         payload = {"chat_id": chat_id, "photo": item['image'], "caption": caption[:1024], "parse_mode": "HTML"}
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", json=payload, timeout=30)
-        print(f"[+] Post Success to {chat_id}")
+        
+        # Telegram သို့ ပို့ဆောင်ခြင်း
+        res = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", json=payload, timeout=30)
+        
+        if res.status_code == 200:
+            log_sent_news(item['link']) # အောင်မြင်မှ မှတ်တမ်းသွင်းမည်
+            print(f"[+] Post Success to {chat_id}")
+            
     except Exception as e:
         print(f"[-] Item Error: {e}")
 
 def run(rss_links=None, mode="1", chat_id=None):
-    """
-    bot.py မှ လှမ်းခေါ်နိုင်ရန် run function ကို parameter များဖြင့် ပြင်ဆင်ထားသည်။
-    """
-    if not TOKEN: 
+    if not TOKEN:
         return print("❌ Token missing!")
-    
-    # CLI ဖြင့် တိုက်ရိုက် run လျှင် input တောင်းမည်
+
     if rss_links is None:
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         mode = input("1. Fast | 2. Detailed: ")
@@ -60,7 +78,7 @@ def run(rss_links=None, mode="1", chat_id=None):
     with ThreadPoolExecutor(max_workers=2) as ex:
         for url in rss_links:
             news = get_news_details(url)
-            for item in news[:3]: # တစ်ကြိမ်လျှင် ၂-၃ ပုဒ်သာ စမ်းသပ်တင်ရန်
+            for item in news: # အကုန်စစ်ဆေးမည်ဖြစ်သော်လည်း အဟောင်းဆိုလျှင် process_item က skip လုပ်သွားမည်
                 ex.submit(process_item, item, mode == "2", chat_id)
 
 if __name__ == "__main__":
